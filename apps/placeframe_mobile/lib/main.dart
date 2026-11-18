@@ -415,7 +415,11 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
   }
 
   // The two slices around the phone's height in the localized map, blended by distance (slice k is at
-  // y = y0 + k * step); a slice not loaded yet is fetched and shows when it arrives.
+  // y = y0 + k * step). The slices within _preloadSlices of them are loaded ahead, so moving up or down shows the
+  // next one at once; a slice not loaded yet is replaced by the nearest loaded one (never black), and decoded slices
+  // more than _keepSlices away are freed (~1 MB each).
+  static const _preloadSlices = 2, _keepSlices = 6;
+
   void _updateSlices() {
     final mapId = _tracked?.mapId, meta = mapId == null ? null : _slicesMeta[mapId];
     final here = _view.mapPosition;
@@ -423,12 +427,45 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
     final levels = (meta['levels'] as num).toInt();
     final level = ((here[1] - (meta['y0'] as num)) / (meta['step'] as num)).clamp(0.0, levels - 1.0);
     final k0 = level.floor(), k1 = math.min(k0 + 1, levels - 1);
+    for (var k = math.max(0, k0 - _preloadSlices); k <= math.min(levels - 1, k1 + _preloadSlices); k++) {
+      _slice(mapId!, k);
+    }
+    _freeSlices(mapId!, k0);
+    final lower = _sliceImages['$mapId/$k0'], upper = _sliceImages['$mapId/$k1'];
+    var blend = level - k0;
+    ui.Image? a = lower, b = upper;
+    if (a == null && b == null) {
+      a = _nearestSlice(mapId, k0, levels); // nothing here yet: the closest slice loaded, rather than nothing
+      blend = 0;
+    } else if (a == null) {
+      blend = 1;
+    } else if (b == null) {
+      blend = 0;
+    }
     _view
       ..sliceMeta = meta
       ..sliceMapY = here[1]
-      ..sliceBlend = level - k0
-      ..sliceLower = _slice(mapId!, k0)
-      ..sliceUpper = _slice(mapId, k1);
+      ..sliceBlend = blend
+      ..sliceLower = a
+      ..sliceUpper = b;
+  }
+
+  ui.Image? _nearestSlice(String mapId, int k, int levels) {
+    for (var d = 1; d < levels; d++) {
+      final img = _sliceImages['$mapId/${k - d}'] ?? _sliceImages['$mapId/${k + d}'];
+      if (img != null) return img;
+    }
+    return null;
+  }
+
+  void _freeSlices(String mapId, int around) {
+    final far = _sliceImages.keys.where((key) {
+      final i = key.lastIndexOf('/');
+      return key.substring(0, i) != mapId || (int.parse(key.substring(i + 1)) - around).abs() > _keepSlices;
+    }).toList();
+    for (final key in far) {
+      _sliceImages.remove(key)?.dispose();
+    }
   }
 
   ui.Image? _slice(String mapId, int k) {
@@ -437,14 +474,21 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
     _sliceImages[key] = null; // loading
     final t = Stopwatch()..start();
     widget.api.mapSliceImage(mapId, k).then((png) async {
-      if (png == null) return;
+      if (png == null) {
+        _sliceImages.remove(key); // try again later
+        return;
+      }
       final frame = await (await ui.instantiateImageCodec(png)).getNextFrame();
+      if (!_sliceImages.containsKey(key)) return frame.image.dispose(); // freed while loading
       _sliceImages[key] = frame.image;
       debugPrint('PF: map slice $k: ${png.length ~/ 1000} KB, ${t.elapsedMilliseconds} ms');
       _updateSlices();
       _viewRevision++;
       _changed();
-    }, onError: (Object e) => debugPrint('PF: map slice $k unavailable: $e'));
+    }, onError: (Object e) {
+      _sliceImages.remove(key);
+      debugPrint('PF: map slice $k unavailable: $e');
+    });
     return null;
   }
 
