@@ -23,6 +23,8 @@ void main() {
     await tester.tap(find.byType(MapPicker));
     await tester.pumpAndSettle();
 
+    // A drop-down: the list opens below the field.
+    expect(tester.getTopLeft(find.text('houses')).dy, greaterThan(tester.getBottomLeft(find.byType(InputDecorator)).dy));
     // Folders by their newest map ("houses" before "tests"); the folder holding the selection is open.
     final houses = tester.getTopLeft(find.text('houses')).dy, tests = tester.getTopLeft(find.text('tests')).dy;
     expect(houses, lessThan(tests));
@@ -32,5 +34,9 @@ void main() {
     await tester.tap(find.text('House v1'));
     await tester.pumpAndSettle();
     expect(reported, {'b', 'a'});
+
+    await tester.tapAt(const Offset(5, 590)); // outside the field and the list
+    await tester.pumpAndSettle();
+    expect(find.text('houses'), findsNothing);
   });
 }

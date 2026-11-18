@@ -25,6 +25,17 @@ class TopDownModel {
   double currentTime = 0;
   Float32List? mapPointsXZ; // display x, z of map points within ±sliceHalfHeight of the phone
   int mapPointCount = 0;
+  // Or, from a map-updater, the map as top-down histogram images (slices): the two around the phone's height in the
+  // map, blended by [sliceBlend] (0 = only [sliceLower]). [sliceMeta]: their grid (x0, z0, cell metres per pixel).
+  Map<String, dynamic>? sliceMeta;
+  ui.Image? sliceLower, sliceUpper;
+  double sliceBlend = 0, sliceMapY = 0;
+
+  // The phone's position in the map frame (needs the display frame, i.e. a confident localization).
+  List<double>? get mapPosition {
+    final f = displayFromMap, cur = currentDisplay;
+    return f == null || cur == null ? null : (f.inverse() * cur).t;
+  }
   double pathLength = 0; // metres moved
 
   static const sliceHalfHeight = 1.0;
@@ -117,6 +128,9 @@ class TopDownModel {
     pathLength = 0;
     mapPointsXZ = null;
     mapPointCount = 0;
+    sliceMeta = null;
+    sliceLower = sliceUpper = null;
+    sliceBlend = 0;
   }
 
   // Map points (x, y, z in the map frame) in the display frame; only the slice around [height] (display y) is kept.
@@ -175,7 +189,8 @@ class _TopDownPainter extends CustomPainter {
     final cx = cur.t[0], cz = cur.t[2];
     Offset s(double x, double z) => Offset(size.width / 2 + (x - cx) * scale, size.height / 2 + (z - cz) * scale);
 
-    final pts = m.mapPointsXZ;
+    _drawSlices(canvas, size, scale, cx, cz);
+    final pts = m.sliceMeta == null ? m.mapPointsXZ : null;
     if (pts != null && pts.isNotEmpty) {
       final screen = Float32List(pts.length);
       for (var i = 0; i < pts.length; i += 2) {
@@ -223,6 +238,32 @@ class _TopDownPainter extends CustomPainter {
         ..strokeWidth = 3);
     }
     canvas.drawCircle(here, 6, Paint()..color = Colors.white);
+  }
+
+  // The two map slices around the phone's height, blended. A slice pixel (u, v) is the map cell at
+  // x = x0 + (u + ½) cell, z = z0 + (v + ½) cell (at the phone's map height); the display frame turns and shifts
+  // the map's x/z plane, so one affine transform takes the image to the screen.
+  void _drawSlices(Canvas canvas, Size size, double scale, double cx, double cz) {
+    final meta = m.sliceMeta, f = m.displayFromMap;
+    if (meta == null || f == null) return;
+    final c = (meta['cell'] as num).toDouble(), x0 = (meta['x0'] as num).toDouble(), z0 = (meta['z0'] as num).toDouble();
+    final r = f.rotationMatrix, t = f.t, y = m.sliceMapY;
+    final a = scale * r[0] * c, b = scale * r[2] * c, d = scale * r[6] * c, e = scale * r[8] * c;
+    final tx = size.width / 2 + scale * (r[0] * (x0 + c / 2) + r[2] * (z0 + c / 2) + r[1] * y + t[0] - cx);
+    final ty = size.height / 2 + scale * (r[6] * (x0 + c / 2) + r[8] * (z0 + c / 2) + r[7] * y + t[2] - cz);
+    canvas.save();
+    canvas.transform(Float64List.fromList([a, d, 0, 0, b, e, 0, 0, 0, 0, 1, 0, tx, ty, 0, 1]));
+    void draw(ui.Image? img, double weight) {
+      if (img == null || weight <= 0.01) return;
+      canvas.drawImage(img, Offset.zero, Paint()
+        ..filterQuality = FilterQuality.low
+        ..blendMode = BlendMode.plus // the weighted sum of the two slices, over the background
+        ..colorFilter = ColorFilter.mode(const Color(0xFFB0BEC5).withValues(alpha: weight), BlendMode.modulate));
+    }
+
+    draw(m.sliceLower, 1 - m.sliceBlend);
+    draw(m.sliceUpper, m.sliceBlend);
+    canvas.restore();
   }
 
   void _label(Canvas canvas, Size size, String text) => _text(canvas, text, Offset(12, size.height / 2 - 8));

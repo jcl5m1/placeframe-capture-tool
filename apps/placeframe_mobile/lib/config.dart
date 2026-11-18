@@ -35,6 +35,10 @@ class Config {
   String get mapperUrl => _prefs.getString('mapperUrl') ?? testMapperUrl;
   set mapperUrl(String v) => _prefs.setString('mapperUrl', v.trim().replaceAll(RegExp(r'/+$'), ''));
 
+  // The maps selected for localizing, kept between runs; null until maps were ever selected on this phone.
+  List<String>? get selectedMaps => _prefs.getStringList('selectedMaps');
+  set selectedMaps(List<String>? v) => v == null ? _prefs.remove('selectedMaps') : _prefs.setStringList('selectedMaps', v);
+
   double get mapRadiusMeters => _prefs.getDouble('mapRadius') ?? 100;
   set mapRadiusMeters(double v) => _prefs.setDouble('mapRadius', v);
 

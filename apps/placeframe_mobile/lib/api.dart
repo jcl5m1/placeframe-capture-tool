@@ -219,6 +219,20 @@ class PlaceframeApi {
         'options': options,
       }) as Map<String, dynamic>;
 
+  // Top-down slices of a map from the map-updater (Config.mapperUrl): grayscale histogram images of its points every
+  // `step` metres of height (see the map-updater's mapper/slices.py). Null without a map-updater.
+  Future<Map<String, dynamic>?> mapSlices(String mapId) async {
+    if (config.mapperUrl.isEmpty) return null;
+    final r = await _client.get(Uri.parse('${config.mapperUrl}/maps/$mapId/slices'), headers: await _headers());
+    return r.statusCode == 200 ? jsonDecode(r.body) as Map<String, dynamic> : null;
+  }
+
+  // One slice image (PNG), or null.
+  Future<Uint8List?> mapSliceImage(String mapId, int k) async {
+    final r = await _client.get(Uri.parse('${config.mapperUrl}/maps/$mapId/slices/$k.png'), headers: await _headers());
+    return r.statusCode == 200 ? r.bodyBytes : null;
+  }
+
   // Asks the map-updater (Config.mapperUrl) to merge an uploaded capture into an existing map; returns its job id.
   Future<String> mergeIntoMap(String captureId, String mapId, String label) async {
     final r = await _client.post(Uri.parse('${config.mapperUrl}/phone-merges'),

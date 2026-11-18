@@ -2,115 +2,130 @@ import 'package:material_ui/material_ui.dart';
 
 import 'api.dart';
 
-// The map picker: a field that shows the selection and opens the maps as a tree of folders ("a/b"), like the web
-// pages' map picker. Several maps can be selected. Maps are listed newest first; folders by their newest map.
-class MapPicker extends StatelessWidget {
-  const MapPicker({
-    super.key,
-    required this.maps,
-    required this.selected,
-    required this.onChanged,
-    this.enabled = true,
-  });
+// The map picker: a field that shows the selection and drops down the maps as a tree of folders ("a/b"), like the
+// web pages' map picker. Several maps can be selected. Maps are listed newest first; folders by their newest map.
+// Tapping outside the list closes it.
+class MapPicker extends StatefulWidget {
+  const MapPicker({super.key, required this.maps, required this.selected, required this.onChanged, this.enabled = true});
 
   final List<MapInfo> maps;
   final Set<String> selected;
   final void Function(Set<String>) onChanged;
   final bool enabled;
 
-  @override
-  Widget build(BuildContext context) {
-    final chosen = maps.where((m) => selected.contains(m.id)).toList();
-    final label = chosen.isEmpty
-        ? 'Choose maps…'
-        : chosen.length == 1
-        ? _path(chosen.first)
-        : '${_path(chosen.first)} + ${chosen.length - 1} more';
-    return InkWell(
-      onTap: enabled && maps.isNotEmpty ? () => _open(context) : null,
-      child: InputDecorator(
-        decoration: const InputDecoration(
-          labelText: 'Maps',
-          border: OutlineInputBorder(),
-          suffixIcon: Icon(Icons.arrow_drop_down),
-        ),
-        child: Text(label, overflow: TextOverflow.ellipsis),
-      ),
-    );
-  }
-
-  static String _path(MapInfo m) => m.folder.isEmpty ? m.name : '${m.folder} / ${m.name}';
-
-  Future<void> _open(BuildContext context) => showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    showDragHandle: true,
-    builder: (context) => DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.75,
-      builder: (context, scroll) => StatefulBuilder(
-        builder: (context, setSheet) {
-          void toggle(String id, bool on) {
-            final next = {...selected};
-            on ? next.add(id) : next.remove(id);
-            selected
-              ..clear()
-              ..addAll(next);
-            onChanged(next);
-            setSheet(() {});
-          }
-
-          return ListView(
-            controller: scroll,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Text('${selected.length} selected · newest first', style: Theme.of(context).textTheme.bodySmall),
-              ),
-              ..._children(context, _tree(maps), selected, toggle, 0),
-            ],
-          );
-        },
-      ),
-    ),
-  );
-
-  static List<Widget> _children(
-    BuildContext context,
-    _Folder f,
-    Set<String> selected,
-    void Function(String, bool) toggle,
-    int depth,
-  ) {
-    final pad = EdgeInsets.only(left: 16.0 + 16 * depth, right: 16);
-    return [
-      for (final sub in f.folders)
-        ExpansionTile(
-          tilePadding: pad,
-          leading: const Icon(Icons.folder_outlined),
-          title: Text(sub.name),
-          subtitle: Text('${sub.count} map${sub.count == 1 ? '' : 's'}'),
-          initiallyExpanded: sub.contains(selected),
-          children: _children(context, sub, selected, toggle, depth + 1),
-        ),
-      for (final m in f.maps)
-        CheckboxListTile(
-          contentPadding: pad,
-          dense: true,
-          value: selected.contains(m.id),
-          onChanged: (v) => toggle(m.id, v == true),
-          title: Text(m.name),
-          subtitle: Text('${created(m)}${m.active ? '' : ' · inactive'}'),
-        ),
-    ];
-  }
-
-  // "2026-11-17 14:02" in local time, from the map's created_at.
+  // "created 2026-11-17 14:02" in local time, from the map's created_at.
   static String created(MapInfo m) {
     final t = DateTime.tryParse(m.createdAt)?.toLocal();
     if (t == null) return 'created —';
     String two(int v) => v.toString().padLeft(2, '0');
     return 'created ${t.year}-${two(t.month)}-${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
+  }
+
+  @override
+  State<MapPicker> createState() => _MapPickerState();
+}
+
+class _MapPickerState extends State<MapPicker> {
+  final _portal = OverlayPortalController();
+  final _link = LayerLink();
+  final _group = Object(); // the field and the list: a tap on either does not count as "outside"
+  double _width = 0;
+
+  static String _path(MapInfo m) => m.folder.isEmpty ? m.name : '${m.folder} / ${m.name}';
+
+  void _toggle(String id, bool on) {
+    final next = {...widget.selected};
+    on ? next.add(id) : next.remove(id);
+    widget.onChanged(next);
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final chosen = widget.maps.where((m) => widget.selected.contains(m.id)).toList();
+    final label = chosen.isEmpty
+        ? 'Choose maps…'
+        : chosen.length == 1
+            ? _path(chosen.first)
+            : '${_path(chosen.first)} + ${chosen.length - 1} more';
+    return LayoutBuilder(builder: (context, box) {
+      _width = box.maxWidth;
+      return CompositedTransformTarget(
+        link: _link,
+        child: OverlayPortal(
+          controller: _portal,
+          overlayChildBuilder: _dropdown,
+          child: TapRegion(
+            groupId: _group,
+            child: InkWell(
+              onTap: widget.enabled && widget.maps.isNotEmpty ? () => setState(_portal.toggle) : null,
+              child: InputDecorator(
+                isFocused: _portal.isShowing,
+                decoration: InputDecoration(
+                    labelText: 'Maps',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: Icon(_portal.isShowing ? Icons.arrow_drop_up : Icons.arrow_drop_down)),
+                child: Text(label, overflow: TextOverflow.ellipsis),
+              ),
+            ),
+          ),
+        ),
+      );
+    });
+  }
+
+  // The list, attached under the field and as wide as it, at most 60% of the screen high.
+  Widget _dropdown(BuildContext context) => CompositedTransformFollower(
+        link: _link,
+        targetAnchor: Alignment.bottomLeft,
+        offset: const Offset(0, 4),
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: TapRegion(
+            groupId: _group,
+            onTapOutside: (_) => setState(_portal.hide),
+            child: Material(
+              elevation: 8,
+              borderRadius: BorderRadius.circular(8),
+              clipBehavior: Clip.antiAlias,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: _width, minWidth: _width, maxHeight: MediaQuery.sizeOf(context).height * 0.6),
+                child: ListView(shrinkWrap: true, padding: const EdgeInsets.symmetric(vertical: 4), children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+                    child: Text('${widget.selected.length} selected · newest first', style: Theme.of(context).textTheme.bodySmall),
+                  ),
+                  ..._children(context, _tree(widget.maps), 0),
+                ]),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  List<Widget> _children(BuildContext context, _Folder f, int depth) {
+    final pad = EdgeInsets.only(left: 12.0 + 16 * depth, right: 8);
+    return [
+      for (final sub in f.folders)
+        ExpansionTile(
+          tilePadding: pad,
+          dense: true,
+          leading: const Icon(Icons.folder_outlined),
+          title: Text(sub.name),
+          subtitle: Text('${sub.count} map${sub.count == 1 ? '' : 's'}'),
+          initiallyExpanded: sub.contains(widget.selected),
+          children: _children(context, sub, depth + 1),
+        ),
+      for (final m in f.maps)
+        CheckboxListTile(
+          contentPadding: pad,
+          dense: true,
+          value: widget.selected.contains(m.id),
+          onChanged: (v) => _toggle(m.id, v == true),
+          title: Text(m.name),
+          subtitle: Text('${MapPicker.created(m)}${m.active ? '' : ' · inactive'}'),
+        ),
+    ];
   }
 
   static _Folder _tree(List<MapInfo> maps) {

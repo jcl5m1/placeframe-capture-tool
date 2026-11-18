@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
@@ -169,6 +170,9 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
   final _view = TopDownModel();
   int _viewRevision = 0;
   final Map<String, Float32List?> _mapPoints = {}; // map id -> points (null: none available)
+  // With a map-updater: the map as top-down slices (see TopDownModel.sliceMeta), not points.
+  final Map<String, Map<String, dynamic>?> _slicesMeta = {}; // map id -> slice description (null: none)
+  final Map<String, ui.Image?> _sliceImages = {}; // "map id/k" -> decoded slice (null while loading or missing)
   TrackedLocalization? _tracked; // the server's estimate after the latest frame
   String _sessionId = ''; // one tracking session per start: odometry restarts with the AR session
   static const _showProbability = 0.8; // draw the place and its map points from this probability
@@ -211,7 +215,10 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
       if (_nearby) _maps = _maps.where((m) => m.placed).toList(); // maps created without GPS have no place
       _maps.sort((a, b) => b.createdAt.compareTo(a.createdAt)); // the most recently built (merged) first
       _selected.retainAll(_maps.map((m) => m.id));
-      if (_selected.isEmpty && Config.defaultMap.isNotEmpty) {
+      // The maps selected last time (kept on the phone); the default map only before anything was ever selected.
+      final saved = widget.config.selectedMaps;
+      if (_selected.isEmpty && saved != null) _selected.addAll(saved.where((id) => _maps.any((m) => m.id == id)));
+      if (_selected.isEmpty && saved == null && Config.defaultMap.isNotEmpty) {
         // The newest matching map: a rebuilt map keeps its predecessor's name with a suffix.
         final matches = _maps.where((m) => m.active && m.name.contains(Config.defaultMap)).toList()
           ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
@@ -290,6 +297,7 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
     _poses++;
     if (p.tracking != 'normal') return _changed();
     _view.addPose(p.worldFromCamera, p.timestamp);
+    _updateSlices();
     final h = _view.currentDisplay!.t[1];
     if (_view.registered && (_sliceHeight == null || (h - _sliceHeight!).abs() > 0.25)) _cutMapSlice();
     _viewRevision++;
@@ -376,7 +384,17 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
         ' → $pct';
     debugPrint('PF: tracked ${f.orientation} $_lastReason hyps=${tr.hypotheses} sigma=${tr.sigmaM?.toStringAsFixed(2)}');
     final mapId = tr.mapId;
-    if (mapId != null && !_mapPoints.containsKey(mapId)) {
+    if (mapId != null && widget.config.mapperUrl.isNotEmpty && !_slicesMeta.containsKey(mapId)) {
+      _slicesMeta[mapId] = null;
+      final t = Stopwatch()..start();
+      widget.api.mapSlices(mapId).then((meta) {
+        _slicesMeta[mapId] = meta;
+        debugPrint('PF: map slices ${mapId.substring(0, 8)}: ${meta?['levels']} levels, '
+            '${meta?['width']}x${meta?['height']} px, ${t.elapsedMilliseconds} ms');
+        _updateSlices();
+      }, onError: (Object e) => debugPrint('PF: map slices unavailable: $e'));
+    }
+    if (mapId != null && widget.config.mapperUrl.isEmpty && !_mapPoints.containsKey(mapId)) {
       _mapPoints[mapId] = null;
       final map = _maps.where((m) => m.id == mapId).firstOrNull;
       (map == null ? Future<Float32List?>.value(null) : widget.api.mapPoints(map.reconstructionId)).then((pts) {
@@ -394,6 +412,40 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
   Pose? get _confidentAlignment {
     final tr = _tracked;
     return tr != null && tr.probability >= _showProbability ? tr.odomFromMap : null;
+  }
+
+  // The two slices around the phone's height in the localized map, blended by distance (slice k is at
+  // y = y0 + k * step); a slice not loaded yet is fetched and shows when it arrives.
+  void _updateSlices() {
+    final mapId = _tracked?.mapId, meta = mapId == null ? null : _slicesMeta[mapId];
+    final here = _view.mapPosition;
+    if (meta == null || here == null) return;
+    final levels = (meta['levels'] as num).toInt();
+    final level = ((here[1] - (meta['y0'] as num)) / (meta['step'] as num)).clamp(0.0, levels - 1.0);
+    final k0 = level.floor(), k1 = math.min(k0 + 1, levels - 1);
+    _view
+      ..sliceMeta = meta
+      ..sliceMapY = here[1]
+      ..sliceBlend = level - k0
+      ..sliceLower = _slice(mapId!, k0)
+      ..sliceUpper = _slice(mapId, k1);
+  }
+
+  ui.Image? _slice(String mapId, int k) {
+    final key = '$mapId/$k';
+    if (_sliceImages.containsKey(key)) return _sliceImages[key];
+    _sliceImages[key] = null; // loading
+    final t = Stopwatch()..start();
+    widget.api.mapSliceImage(mapId, k).then((png) async {
+      if (png == null) return;
+      final frame = await (await ui.instantiateImageCodec(png)).getNextFrame();
+      _sliceImages[key] = frame.image;
+      debugPrint('PF: map slice $k: ${png.length ~/ 1000} KB, ${t.elapsedMilliseconds} ms');
+      _updateSlices();
+      _viewRevision++;
+      _changed();
+    }, onError: (Object e) => debugPrint('PF: map slice $k unavailable: $e'));
+    return null;
   }
 
   // The map points of the localized map, in the view's map-fixed display frame, cut at the phone's height.
@@ -529,9 +581,12 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
           maps: _maps,
           selected: _selected,
           enabled: !_running,
-          onChanged: (ids) => setState(() => _selected
-            ..clear()
-            ..addAll(ids)),
+          onChanged: (ids) {
+            setState(() => _selected
+              ..clear()
+              ..addAll(ids));
+            widget.config.selectedMaps = ids.toList();
+          },
         ),
         for (final m in _maps.where((m) => _selected.contains(m.id)))
           Padding(
