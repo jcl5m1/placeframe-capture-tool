@@ -44,6 +44,7 @@ class TrackedLocalization {
       'frame_candidates': found.length,
       'frame_agreed': true,
       'frame_confidence': best.confidence,
+      'frame_inliers': best.metrics['num_inliers'] as int?,
       'frame_source': 'single frame',
     });
   }
@@ -130,10 +131,10 @@ class PlaceframeApi {
     final b = ByteData.sublistView(r.bodyBytes);
     final count = b.getUint32(0, Endian.little);
     if (r.bodyBytes.length < 4 + count * 12) return null;
-    final step = count > limit ? count / limit : 1.0;
+    final n = count < limit ? count : limit;
     final out = <double>[];
-    for (var i = 0.0; i < count; i += step) {
-      final o = 4 + i.floor() * 12;
+    for (var k = 0; k < n; k++) {
+      final o = 4 + (k * count ~/ n) * 12; // evenly spaced through the list
       out..add(b.getFloat32(o, Endian.little))..add(b.getFloat32(o + 4, Endian.little))..add(b.getFloat32(o + 8, Endian.little));
     }
     return Float32List.fromList(out);

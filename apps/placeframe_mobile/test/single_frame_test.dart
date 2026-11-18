@@ -12,12 +12,13 @@ void main() {
     final mapFromCamera = _pose(-1.1, [5, 1.5, 2]);
     final tr = TrackedLocalization.fromSingleFrame(odomFromCamera, [
       Localization('weak', _pose(0, [0, 0, 0]), 0.3, 100, {}),
-      Localization('best', mapFromCamera, 0.9, 100, {}),
+      Localization('best', mapFromCamera, 0.9, 100, {'num_inliers': 457}),
     ]);
 
     expect(tr.mapId, 'best');
     expect(tr.probability, 0.9);
     expect(tr.frameAgreed, isTrue);
+    expect(tr.frameInliers, 457);
     final mapFromCameraAgain = tr.odomFromMap!.inverse() * odomFromCamera;
     for (var i = 0; i < 3; i++) {
       expect(mapFromCameraAgain.t[i], closeTo(mapFromCamera.t[i], 1e-9));
