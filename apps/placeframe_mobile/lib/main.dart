@@ -505,7 +505,7 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
       Row(children: [
         Expanded(
           child: SegmentedButton<bool>(
-            segments: const [ButtonSegment(value: true, label: Text('GPS Filtered')), ButtonSegment(value: false, label: Text('All maps'))],
+            segments: const [ButtonSegment(value: true, label: Text('Nearby (GPS)')), ButtonSegment(value: false, label: Text('All maps'))],
             selected: {_nearby},
             onSelectionChanged: _running
                 ? null
@@ -955,7 +955,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       Text('Server: ${c.serverUrl}\nUser: ${c.username}'),
       TextFormField(initialValue: c.realm, decoration: const InputDecoration(labelText: 'Keycloak realm'), onChanged: (v) => c.realm = v),
       TextFormField(initialValue: c.clientId, decoration: const InputDecoration(labelText: 'Client id'), onChanged: (v) => c.clientId = v),
-      number('GPS filter radius (m)', c.mapRadiusMeters, (v) => c.mapRadiusMeters = v),
+      number('Nearby radius (m)', c.mapRadiusMeters, (v) => c.mapRadiusMeters = v),
       number('Seconds between capture frames', c.captureIntervalSeconds, (v) => c.captureIntervalSeconds = v),
       TextFormField(
           initialValue: c.mapperUrl,
