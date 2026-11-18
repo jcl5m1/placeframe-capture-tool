@@ -36,6 +36,7 @@ import kotlin.math.roundToInt
 // texture to update), and every [intervalSec] the CPU camera image is JPEG-encoded and sent to Dart with the image
 // intrinsics, the camera pose (column-major 4x4, ARCore/OpenGL camera axes) and the tracking state.
 private const val POSE_INTERVAL_NS = 100_000_000L // 10 Hz
+private const val MAX_LANDMARKS = 200 // 3D feature points sent with each image
 
 class ArFrameStreamer(private val activity: Activity) : EventChannel.StreamHandler {
     private var sink: EventChannel.EventSink? = null
@@ -129,6 +130,7 @@ class ArFrameStreamer(private val activity: Activity) : EventChannel.StreamHandl
                         "width" to dims[0], "height" to dims[1],
                         "fx" to k.focalLength[0].toDouble(), "fy" to k.focalLength[1].toDouble(),
                         "cx" to k.principalPoint[0].toDouble(), "cy" to k.principalPoint[1].toDouble(),
+                        "landmarks" to landmarks(frame),
                     ))
                 }
                 main.post { sink?.success(msg) }
@@ -150,7 +152,31 @@ class ArFrameStreamer(private val activity: Activity) : EventChannel.StreamHandl
             TrackingState.PAUSED -> "limited"
             else -> "not_available"
         }
-        return hashMapOf("pose" to pose.map { it.toDouble() }, "timestamp" to now / 1e9, "tracking" to tracking)
+        // Why tracking is not normal (INSUFFICIENT_LIGHT, EXCESSIVE_MOTION, INSUFFICIENT_FEATURES, ...), for the logs.
+        val reason = if (camera.trackingState == TrackingState.TRACKING) "" else camera.trackingFailureReason.name
+        return hashMapOf("pose" to pose.map { it.toDouble() }, "timestamp" to now / 1e9, "tracking" to tracking,
+            "tracking_reason" to reason)
+    }
+
+    // ARCore's current 3D feature points (world frame, the same as the poses): x, y, z of up to MAX_LANDMARKS
+    // points with confidence of at least 0.3, for the capture screen's top-down view.
+    private fun landmarks(frame: com.google.ar.core.Frame): List<Double> = try {
+        frame.acquirePointCloud().use { cloud ->
+            val b = cloud.points  // x, y, z, confidence per point
+            val n = b.remaining() / 4
+            val step = maxOf(1, n / MAX_LANDMARKS)
+            val out = ArrayList<Double>(minOf(n, MAX_LANDMARKS) * 3)
+            var i = 0
+            while (i < n) {
+                if (b.get(i * 4 + 3) >= 0.3f) {
+                    out.add(b.get(i * 4).toDouble()); out.add(b.get(i * 4 + 1).toDouble()); out.add(b.get(i * 4 + 2).toDouble())
+                }
+                i += step
+            }
+            out
+        }
+    } catch (e: Exception) {
+        emptyList()
     }
 
     // The largest CPU image up to 1920 px wide: enough detail for localization without large uploads.

@@ -8,13 +8,16 @@ import 'geo.dart';
 // One camera frame from the platform's AR tracking (ARKit on iOS, ARCore on Android), no AR view involved.
 class ArFrame {
   ArFrame(this.jpeg, this.width, this.height, this.fx, this.fy, this.cx, this.cy, this.worldFromCamera, this.timestamp,
-      this.tracking);
+      this.tracking,
+      {this.trackingReason = '', this.landmarks = const []});
 
   factory ArFrame.fromMap(Map<dynamic, dynamic> m) {
     final pose = (m['pose'] as List<dynamic>).map((v) => (v as num).toDouble()).toList();
     double d(String k) => (m[k] as num).toDouble();
     return ArFrame(m['jpeg'] as Uint8List, (m['width'] as num).toInt(), (m['height'] as num).toInt(), d('fx'), d('fy'),
-        d('cx'), d('cy'), Pose.fromColumnMajor(pose).withOpenCvCameraAxes(), d('timestamp'), m['tracking'] as String);
+        d('cx'), d('cy'), Pose.fromColumnMajor(pose).withOpenCvCameraAxes(), d('timestamp'), m['tracking'] as String,
+        trackingReason: (m['tracking_reason'] as String?) ?? '',
+        landmarks: ((m['landmarks'] as List<dynamic>?) ?? const []).map((v) => (v as num).toDouble()).toList());
   }
 
   final Uint8List jpeg; // the camera image as the sensor delivers it (not rotated to the screen)
@@ -23,6 +26,8 @@ class ArFrame {
   final Pose worldFromCamera; // AR world (y up, metres) from camera, OpenCV camera axes
   final double timestamp; // seconds, platform clock
   final String tracking; // "normal" | "limited" | "not_available"
+  final String trackingReason; // why tracking is not normal (e.g. EXCESSIVE_MOTION); empty when it is
+  final List<double> landmarks; // the AR platform's current 3D feature points: x, y, z per point, AR world (y up)
 
   bool get trackingOk => tracking == 'normal';
 
@@ -59,16 +64,20 @@ class ArFrame {
 
 // The device pose without an image: AR world (y up, metres) from camera, OpenCV camera axes.
 class ArPose {
-  ArPose(this.worldFromCamera, this.timestamp, this.tracking);
+  ArPose(this.worldFromCamera, this.timestamp, this.tracking, {this.trackingReason = ''});
 
   factory ArPose.fromMap(Map<dynamic, dynamic> m) => ArPose(
       Pose.fromColumnMajor((m['pose'] as List<dynamic>).map((v) => (v as num).toDouble()).toList()).withOpenCvCameraAxes(),
       (m['timestamp'] as num).toDouble(),
-      m['tracking'] as String);
+      m['tracking'] as String,
+      trackingReason: (m['tracking_reason'] as String?) ?? '');
 
   final Pose worldFromCamera;
   final double timestamp;
   final String tracking;
+  final String trackingReason;
+
+  bool get trackingOk => tracking == 'normal';
 }
 
 // Platform channel to the native AR session. Frames arrive at most every [intervalSeconds].

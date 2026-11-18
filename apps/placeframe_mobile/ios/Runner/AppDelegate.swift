@@ -92,16 +92,34 @@ final class ArFramesPlugin: NSObject, FlutterPlugin, FlutterStreamHandler, ARSes
       [Double($0.x), Double($0.y), Double($0.z), Double($0.w)]
     }
     let tracking: String
+    var reason = ""  // why tracking is limited, for the logs
     switch frame.camera.trackingState {
     case .normal: tracking = "normal"
-    case .limited: tracking = "limited"
+    case .limited(let r):
+      tracking = "limited"
+      switch r {
+      case .initializing: reason = "INITIALIZING"
+      case .excessiveMotion: reason = "EXCESSIVE_MOTION"
+      case .insufficientFeatures: reason = "INSUFFICIENT_FEATURES"
+      case .relocalizing: reason = "RELOCALIZING"
+      @unknown default: reason = "UNKNOWN"
+      }
     default: tracking = "not_available"
+    }
+    // ARKit's current 3D feature points (world frame, as the pose): x, y, z of up to 200 points.
+    var landmarks: [Double] = []
+    if let points = frame.rawFeaturePoints?.points, !points.isEmpty {
+      let step = max(1, points.count / 200)
+      for i in stride(from: 0, to: points.count, by: step) {
+        landmarks += [Double(points[i].x), Double(points[i].y), Double(points[i].z)]
+      }
     }
     let message: [String: Any] = [
       "jpeg": FlutterStandardTypedData(bytes: jpeg),
       "width": Int(frame.camera.imageResolution.width), "height": Int(frame.camera.imageResolution.height),
       "fx": Double(k[0][0]), "fy": Double(k[1][1]), "cx": Double(k[2][0]), "cy": Double(k[2][1]),
-      "pose": pose, "timestamp": frame.timestamp, "tracking": tracking,
+      "pose": pose, "timestamp": frame.timestamp, "tracking": tracking, "tracking_reason": reason,
+      "landmarks": landmarks,
     ]
     DispatchQueue.main.async { self.sink?(message) }
   }

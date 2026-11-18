@@ -15,6 +15,10 @@ class Config {
   static const testUser = String.fromEnvironment('PF_USER');
   static const testPassword = String.fromEnvironment('PF_PASSWORD');
   static const defaultMap = String.fromEnvironment('PF_DEFAULT_MAP');
+  // Optional: the API of a map-updater service next to Placeframe (same login), e.g. https://host/mapper/api. It
+  // lists map folders (GET <url>/maps: [{"id", "folder": "a/b"}, ...]) for the folder tree in the map picker, and
+  // merges a phone capture into an existing map (POST <url>/phone-merges). Empty: no folders, new maps only.
+  static const testMapperUrl = String.fromEnvironment('PF_MAPPER_URL');
 
   String get serverUrl => _prefs.getString('serverUrl') ?? testServer;
   set serverUrl(String v) => _prefs.setString('serverUrl', v.trim().replaceAll(RegExp(r'/+$'), ''));
@@ -28,12 +32,11 @@ class Config {
   String get username => _prefs.getString('username') ?? testUser;
   set username(String v) => _prefs.setString('username', v.trim());
 
+  String get mapperUrl => _prefs.getString('mapperUrl') ?? testMapperUrl;
+  set mapperUrl(String v) => _prefs.setString('mapperUrl', v.trim().replaceAll(RegExp(r'/+$'), ''));
+
   double get mapRadiusMeters => _prefs.getDouble('mapRadius') ?? 100;
   set mapRadiusMeters(double v) => _prefs.setDouble('mapRadius', v);
-
-  // A tracked request takes ~0.35 s; one is in flight at a time, so frames come at most this often.
-  double get localizeIntervalSeconds => _prefs.getDouble('localizeInterval') ?? 0.5;
-  set localizeIntervalSeconds(double v) => _prefs.setDouble('localizeInterval', v);
 
   double get captureIntervalSeconds => _prefs.getDouble('captureInterval') ?? 0.5;
   set captureIntervalSeconds(double v) => _prefs.setDouble('captureInterval', v);

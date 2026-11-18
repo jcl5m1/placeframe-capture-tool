@@ -15,6 +15,8 @@ import 'auth.dart';
 import 'capture.dart';
 import 'config.dart';
 import 'geo.dart';
+import 'capture_view.dart';
+import 'map_picker.dart';
 import 'top_down.dart';
 
 Future<void> main() async {
@@ -132,6 +134,9 @@ class _LoginScreenState extends State<LoginScreen> {
 // ------------------------------------------------------------------------------------------------ localize
 
 class LocalizeScreen extends StatefulWidget {
+  // How often a localized phone is queried while its localizations agree (the adaptive rate; shown in Settings).
+  static const trackingIntervalSeconds = 5.0;
+
   const LocalizeScreen({super.key, required this.config, required this.api});
   final Config config;
   final PlaceframeApi api;
@@ -150,7 +155,9 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
   // On a recorded 5-minute walk this sent 4x fewer queries than one per second with the same accuracy.
   bool _lastQueryAgreed = false;
   double _lastSentAt = -1e9; // AR clock seconds
-  static const _trackingInterval = 5.0, _trackingProbability = 0.95;
+  static const _trackingInterval = LocalizeScreen.trackingIntervalSeconds, _trackingProbability = 0.95;
+  // Frames come from the AR session at most this often; which of them are sent is decided above (adaptive rate).
+  static const _frameIntervalSeconds = 0.5;
   static const _odometryJumpMetres = 1.0, _odometryJumpSpeed = 3.0;
   Position? _fix;
   String? _status;
@@ -202,7 +209,7 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
         _maps = await widget.api.maps();
       }
       if (_nearby) _maps = _maps.where((m) => m.placed).toList(); // maps created without GPS have no place
-      _maps.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+      _maps.sort((a, b) => b.createdAt.compareTo(a.createdAt)); // the most recently built (merged) first
       _selected.retainAll(_maps.map((m) => m.id));
       if (_selected.isEmpty && Config.defaultMap.isNotEmpty) {
         // The newest matching map: a rebuilt map keeps its predecessor's name with a suffix.
@@ -238,7 +245,7 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
     _serverTracks = true;
     _sliceHeight = null;
     try {
-      await ArFrames.start(intervalSeconds: widget.config.localizeIntervalSeconds);
+      await ArFrames.start(intervalSeconds: _frameIntervalSeconds);
     } catch (e) {
       return setState(() => _status = 'AR tracking unavailable: $e');
     }
@@ -410,8 +417,23 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
     String v3(List<double> v) => v.map((x) => x.toStringAsFixed(2)).join(', ');
     return Scaffold(
       appBar: AppBar(
-        title: Text('Localizing · ${_selected.map(mapName).join(', ')}', overflow: TextOverflow.ellipsis),
-        actions: [IconButton(icon: const Icon(Icons.stop_circle_outlined), onPressed: () => Navigator.of(context).pop())],
+        automaticallyImplyLeading: false, // one way out: Stop (or the system back gesture)
+        // The map it localized in; before that, which map(s) it is searching.
+        title: ValueListenableBuilder<int>(
+          valueListenable: _ui,
+          builder: (context, _, _) {
+            final id = _tracked?.mapId;
+            final n = _selected.length;
+            return Text(
+                id != null
+                    ? 'Localizing · ${mapName(id)}'
+                    : 'Localizing · searching ${n == 1 ? mapName(_selected.first) : '$n maps'}',
+                overflow: TextOverflow.ellipsis);
+          },
+        ),
+        actions: [
+          TextButton.icon(icon: const Icon(Icons.stop), label: const Text('Stop'), onPressed: () => Navigator.of(context).pop()),
+        ],
       ),
       body: ValueListenableBuilder<int>(
         valueListenable: _ui,
@@ -477,11 +499,13 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
   Widget build(BuildContext context) {
     final last = _last;
     final mapName = last == null ? null : _maps.where((m) => m.id == last.mapId).map((m) => m.name).firstOrNull;
-    return ListView(padding: const EdgeInsets.all(16), children: [
+    // The Start/Stop button stays at the bottom of the screen; the rest scrolls above it.
+    return Column(children: [
+      Expanded(child: ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 8), children: [
       Row(children: [
         Expanded(
           child: SegmentedButton<bool>(
-            segments: const [ButtonSegment(value: true, label: Text('Nearby')), ButtonSegment(value: false, label: Text('All maps'))],
+            segments: const [ButtonSegment(value: true, label: Text('GPS Filtered')), ButtonSegment(value: false, label: Text('All maps'))],
             selected: {_nearby},
             onSelectionChanged: _running
                 ? null
@@ -499,20 +523,23 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
       if (_loadingMaps) const LinearProgressIndicator(),
       if (!_loadingMaps && _maps.isEmpty)
         const Padding(padding: EdgeInsets.all(8), child: Text('No maps found. Try “All maps”: maps without a GPS placement are not found by location.')),
-      for (final m in _maps.where((m) => !_running || _selected.contains(m.id)))
-        CheckboxListTile(
-          dense: true,
-          value: _selected.contains(m.id),
-          onChanged: _running ? null : (v) => setState(() => v == true ? _selected.add(m.id) : _selected.remove(m.id)),
-          title: Text(m.name),
-          subtitle: Text(m.active ? 'active' : 'inactive'),
+      if (_maps.isNotEmpty) ...[
+        const SizedBox(height: 12),
+        MapPicker(
+          maps: _maps,
+          selected: _selected,
+          enabled: !_running,
+          onChanged: (ids) => setState(() => _selected
+            ..clear()
+            ..addAll(ids)),
         ),
-      const SizedBox(height: 8),
-      FilledButton.icon(
-        onPressed: _running ? _stop : _start,
-        icon: Icon(_running ? Icons.stop : Icons.play_arrow),
-        label: Text(_running ? 'Stop localizing' : 'Start localizing'),
-      ),
+        for (final m in _maps.where((m) => _selected.contains(m.id)))
+          Padding(
+            padding: const EdgeInsets.only(top: 4, left: 4),
+            child: Text('${m.folder.isEmpty ? '' : '${m.folder} / '}${m.name} · ${MapPicker.created(m)}${m.active ? '' : ' · inactive'}',
+                style: Theme.of(context).textTheme.bodySmall),
+          ),
+      ],
       const SizedBox(height: 12),
       if (_status != null) Text(_status!, style: Theme.of(context).textTheme.titleMedium),
       if (_lastFrame != null) Text('Tracking: ${_lastFrame!.tracking} · ${_lastFrame!.width}×${_lastFrame!.height}'),
@@ -529,6 +556,21 @@ class _LocalizeScreenState extends State<LocalizeScreen> {
             ]),
           ),
         ),
+      ])),
+      SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+          child: SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _running ? _stop : _start,
+              icon: Icon(_running ? Icons.stop : Icons.play_arrow),
+              label: Text(_running ? 'Stop localizing' : 'Start localizing'),
+            ),
+          ),
+        ),
+      ),
     ]);
   }
 }
@@ -573,16 +615,38 @@ class _CaptureScreenState extends State<CaptureScreen> {
   String _tracking = '-';
   DateTime? _startedAt;
   List<LocalCapture> _captures = [];
-  bool _usePriors = false;
+  bool _usePriors = true;
   String? _message;
   final Set<String> _busy = {};
   Timer? _ticker;
+  // Where the capture goes: a new map, or merged into an existing map (needs the map-updater, Config.mapperUrl).
+  bool _newMap = true;
+  final Set<String> _target = {};
+  List<MapInfo> _maps = [];
+  // Live view while recording.
+  CaptureTrack _track = CaptureTrack();
+  StreamSubscription<ArPose>? _poseSub;
+  Pose? _lastPose;
+  String _trackingReason = '';
 
   @override
   void initState() {
     super.initState();
     _reload();
+    _loadMaps();
   }
+
+  Future<void> _loadMaps() async {
+    try {
+      final maps = await widget.api.maps();
+      maps.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+      if (mounted) setState(() => _maps = maps);
+    } catch (e) {
+      debugPrint('PF: capture: maps not loaded: $e');
+    }
+  }
+
+  MapInfo? get _targetMap => _newMap ? null : _maps.where((m) => _target.contains(m.id)).firstOrNull;
 
   @override
   void dispose() {
@@ -603,10 +667,19 @@ class _CaptureScreenState extends State<CaptureScreen> {
     } catch (e) {
       return setState(() => _message = 'AR tracking unavailable: $e');
     }
+    _track = CaptureTrack();
     _frames = ArFrames.frames.listen((f) {
       _tracking = f.tracking;
+      _trackingReason = f.trackingReason;
+      _track.addFrame(f);
       session.addFrame(f);
     });
+    _poseSub = ArFrames.poses.listen((p) {
+      if (!p.trackingOk) return;
+      _lastPose = p.worldFromCamera;
+      _track.addPose(p.worldFromCamera);
+    });
+    debugPrint('PF: capture started ${session.id}: ${_newMap ? 'new map' : 'into ${_targetMap?.name}'}');
     if (await ensureLocationPermission()) {
       _gps = Geolocator.getPositionStream(locationSettings: const LocationSettings(accuracy: LocationAccuracy.best))
           .listen((p) {
@@ -625,7 +698,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
   Future<void> _stopRecording() async {
     final session = _session!;
     _ticker?.cancel();
+    await _poseSub?.cancel();
     await _frames?.cancel();
+    debugPrint('PF: capture stopped ${session.id}: ${session.frames} frames kept of ${session.received} '
+        '(${session.describeTracking()}), ${_track.distance.toStringAsFixed(1)} m walked');
     await _gps?.cancel();
     await ArFrames.stop();
     setState(() => _session = null);
@@ -640,12 +716,16 @@ class _CaptureScreenState extends State<CaptureScreen> {
         'tar': tar.path,
         'tar_bytes': await tar.length(),
         'has_location': await File('${session.dir.path}/location.json').exists(),
+        if (_targetMap != null) 'target_map_id': _targetMap!.id,
+        if (_targetMap != null) 'target_map_name': _targetMap!.name,
+        'distance_m': _track.distance,
         'status': 'recorded',
       }).save();
       await session.dir.delete(recursive: true); // the tar holds everything
       _message = 'Recorded ${session.frames} frames';
     } catch (e) {
       _message = '$e';
+      debugPrint('PF: capture ${session.id} not saved: $e');
     }
     await _reload();
   }
@@ -658,6 +738,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
       final captureId = await widget.api
           .uploadCapture(File(c.json['tar'] as String), c.name, DateTime.parse(c.json['recorded_at'] as String));
       c.json['capture_session_id'] = captureId;
+      final target = c.json['target_map_id'] as String?;
+      if (target != null) {
+        // Merged into the existing map by the map-updater (it registers the capture to the map and rebuilds it).
+        c.json['merge_job'] = await widget.api.mergeIntoMap(captureId, target, c.name);
+        c.json['status'] = 'merging into ${c.json['target_map_name']}: queued';
+        return;
+      }
       final options = _usePriors ? {'use_prior_position': true, 'pose_prior_position_sigma_m': 2.0} : <String, dynamic>{};
       final rec = await widget.api.createReconstruction(captureId, options);
       c.json['reconstruction_id'] = rec['id'];
@@ -672,6 +759,22 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<void> _refresh(LocalCapture c) async {
+    final jobId = c.json['merge_job'] as String?;
+    if (jobId != null) {
+      try {
+        final j = await widget.api.mergeJob(jobId);
+        if (j != null) {
+          final mapId = (j['result'] as Map<String, dynamic>?)?['map_id'];
+          c.json['status'] = 'merging into ${c.json['target_map_name']}: ${j['state']}'
+              '${j['current'] != null ? ' (${j['current']})' : ''}${j['error'] != null ? ' — ${j['error']}' : ''}';
+          if (mapId != null) c.json['map_id'] = mapId;
+          await c.save();
+        }
+      } catch (e) {
+        _message = '$e';
+      }
+      return _reload();
+    }
     final rid = c.json['reconstruction_id'] as String?;
     if (rid == null) return;
     try {
@@ -703,6 +806,34 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final s = _session;
     return ListView(padding: const EdgeInsets.all(16), children: [
       TextField(controller: _name, enabled: s == null, decoration: const InputDecoration(labelText: 'Capture name (optional)')),
+      const SizedBox(height: 8),
+      SegmentedButton<bool>(
+        segments: [
+          const ButtonSegment(value: true, label: Text('New map')),
+          ButtonSegment(value: false, label: const Text('Add to existing map'), enabled: widget.config.mapperUrl.isNotEmpty),
+        ],
+        selected: {_newMap},
+        onSelectionChanged: s != null ? null : (v) => setState(() => _newMap = v.first),
+      ),
+      if (widget.config.mapperUrl.isEmpty)
+        Text('Adding to an existing map needs a map-updater (Settings).', style: Theme.of(context).textTheme.bodySmall),
+      if (!_newMap) ...[
+        const SizedBox(height: 8),
+        MapPicker(
+          maps: _maps,
+          selected: _target,
+          enabled: s == null,
+          // One target map: the latest one ticked.
+          onChanged: (ids) => setState(() {
+            final added = ids.difference(_target);
+            _target
+              ..clear()
+              ..addAll(added.isNotEmpty ? {added.first} : ids.take(1));
+          }),
+        ),
+        if (_targetMap != null)
+          Text('Start and end in an area the map already covers.', style: Theme.of(context).textTheme.bodySmall),
+      ],
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
         value: _usePriors,
@@ -711,14 +842,40 @@ class _CaptureScreenState extends State<CaptureScreen> {
         subtitle: const Text('Guides the build with the phone’s tracking (2 m prior). Off = Placeframe defaults.'),
       ),
       FilledButton.icon(
-        onPressed: s == null ? _record : _stopRecording,
+        onPressed: s != null ? _stopRecording : (!_newMap && _targetMap == null ? null : _record),
         icon: Icon(s == null ? Icons.fiber_manual_record : Icons.stop),
         label: Text(s == null ? 'Start recording' : 'Stop recording'),
       ),
       if (s != null) ...[
         const SizedBox(height: 8),
-        Text('${s.frames} frames · ${DateTime.now().difference(_startedAt!).inSeconds} s · tracking $_tracking'),
-        Text(_fix == null ? 'GPS: waiting for a fix…' : 'GPS ± ${_fix!.accuracy.round()} m'),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // The latest frame captured, turned upright.
+          if (_track.lastFrame != null)
+            SizedBox(
+              width: 110,
+              child: RotatedBox(
+                quarterTurns: switch (_track.lastFrame!.orientation) { 'RIGHT_TOP' => 1, 'LEFT_BOTTOM' => 3, 'BOTTOM_RIGHT' => 2, _ => 0 },
+                child: Image.memory(_track.lastFrame!.jpeg, gaplessPlayback: true, fit: BoxFit.contain),
+              ),
+            ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('${s.frames} frames captured (${s.received} received)'),
+              Text('${_track.distance.toStringAsFixed(1)} m walked · ${DateTime.now().difference(_startedAt!).inSeconds} s'),
+              if (_track.position != null) Text('xyz ${_track.position!.map((v) => v.toStringAsFixed(2)).join(', ')} m'),
+              Text('Tracking: $_tracking${_trackingReason.isEmpty ? '' : ' ($_trackingReason)'}',
+                  style: TextStyle(color: _tracking == 'normal' ? null : Colors.orange)),
+              Text('${_track.landmarks.length} landmarks'),
+              Text(_fix == null ? 'GPS: waiting for a fix…' : 'GPS ± ${_fix!.accuracy.round()} m'),
+            ]),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        AspectRatio(
+          aspectRatio: 1,
+          child: CustomPaint(painter: CaptureTopDown(_track, _lastPose, _track.path.length * 100000 + _track.landmarks.length)),
+        ),
         const Text('Walk slowly; keep the phone steady and the scene textured.'),
       ],
       if (_message != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_message!)),
@@ -739,7 +896,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
           child: ListTile(
             title: Text(c.name),
             subtitle: Text('${c.json['frames']} frames · ${((c.json['tar_bytes'] as num) / 1e6).toStringAsFixed(1)} MB'
-                '${c.json['has_location'] == true ? ' · GPS' : ' · no GPS'}\n${c.status ?? ''}'),
+                '${c.json['has_location'] == true ? ' · GPS' : ' · no GPS'}'
+                '${c.json['target_map_name'] != null ? ' · into ${c.json['target_map_name']}' : ' · new map'}\n${c.status ?? ''}'),
             isThreeLine: true,
             trailing: _busy.contains(c.id)
                 ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
@@ -754,8 +912,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
                       }
                     },
                     itemBuilder: (_) => [
-                      if (c.json['capture_session_id'] == null) const PopupMenuItem(value: 'upload', child: Text('Upload and build')),
-                      if (c.json['reconstruction_id'] != null) const PopupMenuItem(value: 'refresh', child: Text('Refresh status')),
+                      if (c.json['capture_session_id'] == null)
+                        PopupMenuItem(
+                            value: 'upload',
+                            child: Text(c.json['target_map_id'] != null ? 'Upload and merge into the map' : 'Upload and build')),
+                      if (c.json['reconstruction_id'] != null || c.json['merge_job'] != null)
+                        const PopupMenuItem(value: 'refresh', child: Text('Refresh status')),
                       if ((c.status ?? '').startsWith('succeeded') && c.json['map_id'] == null)
                         const PopupMenuItem(value: 'map', child: Text('Create map')),
                       const PopupMenuItem(value: 'delete', child: Text('Delete from device')),
@@ -793,9 +955,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
       Text('Server: ${c.serverUrl}\nUser: ${c.username}'),
       TextFormField(initialValue: c.realm, decoration: const InputDecoration(labelText: 'Keycloak realm'), onChanged: (v) => c.realm = v),
       TextFormField(initialValue: c.clientId, decoration: const InputDecoration(labelText: 'Client id'), onChanged: (v) => c.clientId = v),
-      number('Nearby map radius (m)', c.mapRadiusMeters, (v) => c.mapRadiusMeters = v),
-      number('Seconds between localization frames', c.localizeIntervalSeconds, (v) => c.localizeIntervalSeconds = v),
+      number('GPS filter radius (m)', c.mapRadiusMeters, (v) => c.mapRadiusMeters = v),
       number('Seconds between capture frames', c.captureIntervalSeconds, (v) => c.captureIntervalSeconds = v),
+      TextFormField(
+          initialValue: c.mapperUrl,
+          decoration: const InputDecoration(
+              labelText: 'Map-updater URL (optional)',
+              helperText: 'Map folders in the map picker, and adding captures to existing maps'),
+          onChanged: (v) => c.mapperUrl = v),
+      const SizedBox(height: 12),
+      Text(
+          'Localization rate is adaptive: every frame (at most 2 per second) until the phone is localized, then every '
+          '${LocalizeScreen.trackingIntervalSeconds.round()} s while the localizations agree, and every frame again after a '
+          'disagreement or an odometry jump.',
+          style: Theme.of(context).textTheme.bodySmall),
       const SizedBox(height: 16),
       OutlinedButton(
           onPressed: () {
